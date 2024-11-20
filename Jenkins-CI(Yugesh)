@@ -1,0 +1,91 @@
+pipeline {
+    agent any
+
+    tools {
+        jdk 'java-11'
+    }
+    options {
+        timestamps()
+    }
+    parameters {
+        booleanParam(name: 'code_stability', defaultValue: false, description: 'Set to true to skip the code stability')
+        booleanParam(name: 'code_quality_analysis', defaultValue: false, description: 'Set to true to skip the Code quality analysis')
+        booleanParam(name: 'code_coverage_analysis', defaultValue: false, description: 'Set to true to skip the Code coverage analysis')
+        
+    }
+
+    stages {
+        stage('Cleaning Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Git Checkout') {
+            steps {
+                git branch: 'master', url: 'https://github.com/opstree/spring3hibernate.git'
+                sh '''
+                    java --version
+                '''
+            }
+        }
+        stage('parallel running job'){
+            parallel{
+                
+                stage('code stability') {
+                    when { expression { params.code_stability != true } }
+                    steps {
+                        retry(3) {
+                            sh 'mvn test'
+                        }
+                    }
+                }     
+                
+                stage('Code quality analysis') {
+                    when { expression { params.code_quality_analysis != true } }
+                    steps {
+                        retry(3) {
+                            sh 'mvn checkstyle:checkstyle'
+                        }
+                        //publishHTML([allowMissing: false, alwaysLinkToLastBuild: false, keepAll: false, reportDir: 'target/site', reportFiles: 'checkstyle.html', reportName: 'Code quality analysis report', reportTitles: '', useWrapperFileDirectly: true])
+                        //recordIssues sourceCodeRetention: 'LAST_BUILD', tools: [checkStyle(pattern: 'target/site/checkstyle.html')]
+                        recordIssues sourceCodeRetention: 'LAST_BUILD', tools: [checkStyle(pattern: 'target/checkstyle-result.xml')]
+                    }
+                    
+                }
+                
+                stage('Code coverage analysis') {
+                    when { expression { params.code_coverage_analysis != true } }
+                    steps {
+                        
+                        retry(3) {
+                            sh 'mvn cobertura:cobertura'
+                            
+                        }
+                        recordCoverage(tools: [[parser: 'COBERTURA', pattern: 'target/site/cobertura/coverage.xml']])
+                    }
+                }
+            }
+        }
+        stage('create and publish artifact'){
+            steps {
+                input 'Do you want to publish the artifact ?'
+                sh 'mvn package'
+                archiveArtifacts artifacts: 'target/*.war', followSymlinks: false, onlyIfSuccessful: true
+            }
+        }
+    }
+    post {
+        always {
+            script {
+               slackSend(
+                channel: '#all-notify', 
+                color: currentBuild.currentResult == 'SUCCESS' ? 'good' : 'danger', 
+                message: "${currentBuild.currentResult}: Build #${env.BUILD_NUMBER}. Check the details: ${env.BUILD_URL}", 
+                tokenCredentialId: 'slack'
+                )
+
+            } 
+        }
+    }
+}
